@@ -17,13 +17,30 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+import (
+	"raft/labrpc"
+	"sync"
+	"time"
+)
 
 // import "bytes"
 // import "encoding/gob"
 
+type State int //node state: 0 -> follower, 1 -> candidate, 2 -> leader
 
+const (
+	Follower State = iota
+	Candidate
+	Leader
+)
+
+//Log structure for our nodes
+type LogEntry struct {
+
+	Term int
+	Command interface{}
+
+}
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -31,25 +48,41 @@ import "labrpc"
 // tester) on the same server, via the applyCh passed to Make().
 //
 type ApplyMsg struct {
-	Index       int
-	Command     interface{}
-	UseSnapshot bool   // ignore for lab2; only used in lab3
-	Snapshot    []byte // ignore for lab2; only used in lab3
+	Index        int
+	Command      interface{}
+	ValidCommand bool
+	UseSnapshot  bool   // ignore for lab2; only used in lab3
+	Snapshot     []byte // ignore for lab2; only used in lab3
 }
 
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state
+	mu        sync.Mutex          // Lock to protect shared access to this peer's state		State 
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
+	dead	  int32
 
-	// Your data here (2A, 2B, 2C).
-	// Look at the paper's Figure 2 for a description of what
-	// state a Raft server must maintain.
+	//Persistent state on all servers ((Updated on stable storage before responding to RPCs))
+	currentTerm int
+	votedFor    int		//candidateId that received a vote in current Term (null if none)
+	log[]       []LogEntry //entries for the log. each one has commands for state machine, and term when entry was received by the leader (first index is 1)
 
+	//Volatile state on all servers
+	commitIndex int		//index of log w highest ranking known to be committed(initially 0 and incremented monotonically)
+	lastApplied int		//index of log w highest ranking applied to state machine(initially 0 and incremented monotonically)
+
+	//Volatile state on leaders (Reinitialized after election)
+	nextIndex   []int	//for each server, index of the next log entry to send to server (initialized w last logIndex + 1)
+	matchIndex  []int	//for each server, index of highest log entry to to be replicated on server machine(initially 0 and incremented monotonically)
+
+
+	electonTimeout   time.Duration
+	heartbeatTimeout time.Duration
+
+	applyChannel     chan ApplyMsg
 }
 
 // return currentTerm and whether this server
