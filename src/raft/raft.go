@@ -34,10 +34,19 @@ const (
 	Leader
 )
 
+// Default Times for elections and Heartbeats operations
+const (
+	DefaultElectionTimeoutMin   = 250
+	DefaultElectionTimeoutRange = 150
+	DefaultHeartbeatInterval    = 47
+	DefaultChannelBufferSize    = 23
+)
+
 //Log structure for our nodes
 type LogEntry struct {
-	Term int
-	Command interface{}
+	LogTerm int
+	LogIndex int
+	LogCommand interface{}
 }
 
 //
@@ -48,18 +57,18 @@ type LogEntry struct {
 type ApplyMsg struct {
 	Index        int
 	Command      interface{}
-	ValidCommand bool
+	ValidCommand bool	// não sei se precisa
 	UseSnapshot  bool   // ignore for lab2; only used in lab3
 	Snapshot     []byte // ignore for lab2; only used in lab3
 }
 
 type AppendEntriesArgs struct {
-    Term         int
-    LeaderId     int
-    PrevLogIndex int
-    PrevLogTerm  int
-    Entries      []LogEntry
-    LeaderCommit int
+    Term         int	//Leader's term number
+    LeaderId     int	//Leader's id
+    // PrevLogIndex int
+    // PrevLogTerm  int
+    // Entries      []LogEntry
+    // LeaderCommit int
 }
 
 type AppendEntriesReply struct {
@@ -81,43 +90,49 @@ type Raft struct {
 	//Persistent state on all servers ((Updated on stable storage before responding to RPCs))
 	currentTerm int
 	votedFor    int		//candidateId that received a vote in current Term (null if none)
-	log[]       []LogEntry //entries for the log. each one has commands for state machine, and term when entry was received by the leader (first index is 1)
-
-	//Volatile state on all servers
-	commitIndex int		//index of log w highest ranking known to be committed(initially 0 and incremented monotonically)
-	lastApplied int		//index of log w highest ranking applied to state machine(initially 0 and incremented monotonically)
-
-	//Volatile state on leaders (Reinitialized after election)
-	nextIndex   []int	//for each server, index of the next log entry to send to server (initialized w last logIndex + 1)
-	matchIndex  []int	//for each server, index of highest log entry to to be replicated on server machine(initially 0 and incremented monotonically)
-
-
-	electonTimeout   time.Duration
-	heartbeatTimeout time.Duration
-
+	votesCount 	int		//Count for received votes
+	requestVoteReplied chan bool
+	appendEntriesReceived 	chan bool
+	// commandApplied 			chan ApplyMsg
 	applyChannel     chan ApplyMsg
+
+	winner chan bool
+
+
+	// Utilizaremos?
+	// //Volatile state on all servers
+	// commitIndex int		//index of log w highest ranking known to be committed
+	// lastApplied int		//index of log w highest ranking applied to state machine
+
+	// //Volatile state on leaders (Reinitialized after election)
+	// nextIndex   []int	//index of the next log entry to send to server (initialized w last logIndex + 1)
+	// matchIndex  []int	//index of highest log entry the leader received from each follower
+
 }
 
+
+//Utilizaremos?
 // return currentTerm and whether this server
 // believes it is the leader.
 func (rf *Raft) GetState() (int, bool) {
 
-	var term int
-	var isleader bool
+	return rf.currentTerm, rf.state == Leader
 
-	term = rf.currentTerm
-	isleader = rf.state == Leader
-
-	return term, isleader
 }
 
-//
+func (rf *Raft) GetActualState() (int) {
+
+	return int(rf.state)
+
+}
+
+
+//Utilizaremos?
 // save Raft's persistent state to stable storage,
 // where it can later be retrieved after a crash and restart.
 // see paper's Figure 2 for a description of what should be persistent.
 //
 func (rf *Raft) persist() {
-	// Your code here (2C).
 
 	w := new(bytes.Buffer)
 	e := gob.NewEncoder(w)
@@ -128,16 +143,17 @@ func (rf *Raft) persist() {
 	rf.persister.SaveRaftState(data)
 }
 
-//
+//Utilizaremos?
 // restore previously persisted state.
 //
 func (rf *Raft) readPersist(data []byte) {
-	// Your code here (2C).
-	// Example:
-	// r := bytes.NewBuffer(data)
-	// d := gob.NewDecoder(r)
-	// d.Decode(&rf.xxx)
-	// d.Decode(&rf.yyy)
+	
+	r := bytes.NewBuffer(data)
+	d := gob.NewDecoder(r)
+	d.Decode(&rf.currentTerm)
+	d.Decode(&rf.votedFor)
+	d.Decode(&rf.log)
+	
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
 	}
@@ -156,8 +172,8 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 type RequestVoteArgs struct {
 	Term			int
 	CandidateId		int
-	LastLogIndex	int
-	LastLogTerm	    int
+	// LastLogIndex	int
+	// LastLogTerm	    int
 }
 
 //
@@ -262,9 +278,17 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.peers = peers
 	rf.persister = persister
 	rf.me = me
+	rf.state = Follower
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	
+	rf.votesCount = 0
 
-	// Your initialization code here (2A, 2B, 2C).
+	rf.appendEntriesReceived = make(chan bool, DefaultChannelBufferSize)
+	rf.requestVoteReplied = make(chan bool, DefaultChannelBufferSize)
+	rf.winner = make(chan bool, DefaultChannelBufferSize)
 
+	
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
