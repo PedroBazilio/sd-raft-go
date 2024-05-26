@@ -34,7 +34,7 @@ const (
 	Leader
 )
 
-// Default Times for elections and Heartbeats operations
+// Padrão de tempo para operações de eleição e 'batimentos'
 const (
 	DefaultElectionTimeoutMin   = 250
 	DefaultElectionTimeoutRange = 150
@@ -42,7 +42,7 @@ const (
 	DefaultChannelBufferSize    = 23
 )
 
-//Log structure for our nodes
+//estrutura de log para os nós
 type LogEntry struct {
 	LogTerm int
 	LogIndex int
@@ -120,9 +120,9 @@ func (rf *Raft) GetState() (int, bool) {
 
 }
 
-func (rf *Raft) GetActualState() (int) {
+func (rf *Raft) GetActualState() State {
 
-	return int(rf.state)
+	return rf.state
 
 }
 
@@ -138,7 +138,7 @@ func (rf *Raft) persist() {
 	e := gob.NewEncoder(w)
 	e.Encode(rf.currentTerm)
 	e.Encode(rf.votedFor)
-	e.Encode(rf.log)
+	// e.Encode(rf.log)
 	data := w.Bytes()
 	rf.persister.SaveRaftState(data)
 }
@@ -152,7 +152,7 @@ func (rf *Raft) readPersist(data []byte) {
 	d := gob.NewDecoder(r)
 	d.Decode(&rf.currentTerm)
 	d.Decode(&rf.votedFor)
-	d.Decode(&rf.log)
+	// d.Decode(&rf.log)
 	
 	if data == nil || len(data) < 1 { // bootstrap without any state?
 		return
@@ -261,6 +261,36 @@ func (rf *Raft) Kill() {
 	// Your code here, if desired.
 }
 
+
+func (rf *Raft) performFollowerActions() {
+    
+}
+
+func (rf *Raft) performCandidateActions() {
+    
+}
+
+func (rf *Raft) performLeaderActions() {
+    
+}
+
+
+func (rf *Raft) raftLoop() {
+    stateActions := map[State]func(){
+        Follower:  rf.performFollowerActions,
+        Candidate: rf.performCandidateActions,
+        Leader:    rf.performLeaderActions,
+    }
+
+    for {
+        state := rf.GetActualState() // Get the current state of the node
+        if action, exists := stateActions[state]; exists {
+            action() 
+        }
+        time.Sleep(10 * time.Millisecond) 
+    }
+}
+
 //
 // the service or tester wants to create a Raft server. the ports
 // of all the Raft servers (including this one) are in peers[]. this
@@ -289,6 +319,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.winner = make(chan bool, DefaultChannelBufferSize)
 
 	
+	rf.raftLoop()
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
 
