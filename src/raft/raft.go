@@ -21,10 +21,10 @@ import (
 	"raft/labrpc"
 	"sync"
 	"time"
+	"bytes"
+	"encoding/gob"
 )
 
-// import "bytes"
-// import "encoding/gob"
 
 type State int //node state: 0 -> follower, 1 -> candidate, 2 -> leader
 
@@ -36,10 +36,8 @@ const (
 
 //Log structure for our nodes
 type LogEntry struct {
-
 	Term int
 	Command interface{}
-
 }
 
 //
@@ -55,11 +53,26 @@ type ApplyMsg struct {
 	Snapshot     []byte // ignore for lab2; only used in lab3
 }
 
+type AppendEntriesArgs struct {
+    Term         int
+    LeaderId     int
+    PrevLogIndex int
+    PrevLogTerm  int
+    Entries      []LogEntry
+    LeaderCommit int
+}
+
+type AppendEntriesReply struct {
+    Term    int
+    Success bool
+}
+
 //
 // A Go object implementing a single Raft peer.
 //
 type Raft struct {
-	mu        sync.Mutex          // Lock to protect shared access to this peer's state		State 
+	mu        sync.Mutex          // Lock to protect shared access to this peer's 
+	state	  State
 	peers     []*labrpc.ClientEnd // RPC end points of all peers
 	persister *Persister          // Object to hold this peer's persisted state
 	me        int                 // this peer's index into peers[]
@@ -91,7 +104,10 @@ func (rf *Raft) GetState() (int, bool) {
 
 	var term int
 	var isleader bool
-	// Your code here (2A).
+
+	term = rf.currentTerm
+	isleader = rf.state == Leader
+
 	return term, isleader
 }
 
@@ -102,13 +118,14 @@ func (rf *Raft) GetState() (int, bool) {
 //
 func (rf *Raft) persist() {
 	// Your code here (2C).
-	// Example:
-	// w := new(bytes.Buffer)
-	// e := gob.NewEncoder(w)
-	// e.Encode(rf.xxx)
-	// e.Encode(rf.yyy)
-	// data := w.Bytes()
-	// rf.persister.SaveRaftState(data)
+
+	w := new(bytes.Buffer)
+	e := gob.NewEncoder(w)
+	e.Encode(rf.currentTerm)
+	e.Encode(rf.votedFor)
+	e.Encode(rf.log)
+	data := w.Bytes()
+	rf.persister.SaveRaftState(data)
 }
 
 //
@@ -127,6 +144,9 @@ func (rf *Raft) readPersist(data []byte) {
 }
 
 
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+
+}
 
 
 //
@@ -134,7 +154,10 @@ func (rf *Raft) readPersist(data []byte) {
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
-	// Your data here (2A, 2B).
+	Term			int
+	CandidateId		int
+	LastLogIndex	int
+	LastLogTerm	    int
 }
 
 //
@@ -142,7 +165,8 @@ type RequestVoteArgs struct {
 // field names must start with capital letters!
 //
 type RequestVoteReply struct {
-	// Your data here (2A).
+	Term		int
+	voteGranted		bool
 }
 
 //
