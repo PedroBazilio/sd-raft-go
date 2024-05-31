@@ -39,7 +39,7 @@ const (
 	
 	DefaultElectionTimeoutMin   = 250
 	DefaultElectionTimeoutRange = 150
-	DefaultHeartbeatInterval    = 47
+	DefaultHeartbeatInterval    = 41
 	DefaultChannelBufferSize    = 23
 )
 
@@ -116,12 +116,6 @@ type Raft struct {
 	winner chan bool
 	alive	bool
 
-	
- 	votesForMe	int
-
-	receivedHeartbeat bool
-
-
 	// //Volatile state on all servers
 	// applyChannel     chan ApplyMsg
 	// commitIndex int		//index of log w highest ranking known to be committed
@@ -161,7 +155,7 @@ func (rf *Raft) AppendEntries(args AppendEntriesArgs, reply *AppendEntriesReply)
 	// rf -> receiver
 	// args -> sender
 
-	// current args are old entries and will not be appended
+	// current args are in an old term and will not be appended
 	if args.Term < rf.currentTerm {
 		reply.Term = rf.currentTerm
 		reply.Success = false
@@ -217,45 +211,40 @@ func (rf *Raft) sendAppendEntries(server int, args AppendEntriesArgs, reply *App
 
 //
 // example RequestVote RPC handler.
-//
+// rf -> receiver | args -> sender
+
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-
-	// rf -> receiver
-	// args -> sender
 
 	reply.VoteGranted = false
 
 	if args.Term < rf.currentTerm {		// se term remetente < destinatario, nao vota
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
 		return
 	}
-
 
 	//case where the log is up-to-date isn't for 2A
 
 	if args.Term > rf.currentTerm {		
-		rf.currentTerm = args.Term			
-		rf.state = Follower						
-	
+		rf.currentTerm = args.Term
+		rf.state = Follower
 		rf.votedFor = args.CandidateId
-		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
 
-		rf.requestVoteReplied <- true
-
-	}else if rf.state != Follower {		// same term and and receiver isn't a follower: don't vote
+	} else if rf.state != Follower {		// same term and and receiver isn't a follower: don't vote
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = false
-	}else if(rf.votedFor == -1 || rf.votedFor == args.CandidateId) { //  same term and and receiver is a follower: vote
-		rf.votedFor = args.CandidateId
+		return
+	} else if(rf.votedFor == -1 || rf.votedFor == args.CandidateId){ //  same term and and receiver is a follower: vote
 		reply.Term = rf.currentTerm
-		reply.VoteGranted = true
-
-		rf.requestVoteReplied <- true
+		return
 	}
+
+	rf.votedFor = args.CandidateId
+	reply.Term = rf.currentTerm
+	reply.VoteGranted = true
+
+	// Signal that a vote reply has been sent
+	rf.requestVoteReplied <- true
 }
 
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
@@ -265,13 +254,14 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	defer rf.mu.Unlock()
 
 	if ok {
-		if reply.Term > rf.currentTerm {//atualiza servidor remetente com term menor que destinatário
+
+		//update term and state if reply term's is greate than the actual
+		if reply.Term > rf.currentTerm {
 			rf.currentTerm = reply.Term
 			fmt.Printf("%d isn't anymore a %d\n", rf.me,rf.GetActualState())
 			rf.state= Follower
 			rf.votedFor = -1
 			return ok
-
 		}
 		
 		if reply.VoteGranted {
@@ -280,10 +270,8 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 				rf.winner <- true
 			}
 		}
-
-		
-		return ok
 	}
+
 	return ok
 }
 
@@ -291,11 +279,11 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 func (rf *Raft) sendToAllRequestVote() {
 	var args RequestVoteArgs
 	rf.mu.Lock()
-	args.Term = rf.currentTerm
-	args.CandidateId = rf.me
+	args = RequestVoteArgs{
+		Term:       rf.currentTerm,
+		CandidateId: rf.me,
+	}
 	rf.mu.Unlock()
-
-	
 
 	for i := range rf.peers {
 		if i != rf.me && rf.state == Candidate {
@@ -349,30 +337,11 @@ func (rf *Raft) performFollowerActions() {
 
 func (rf *Raft) performCandidateActions() {
 
-	rf.mu.Lock()
-	rf.currentTerm += 1
-	rf.votedFor = rf.me
-	rf.votesCount = 1
-	fmt.Printf("%d apllied with %d votes\n", rf.me,rf.votesCount)
+	rf.initiateCandidateState()
 	rf.mu.Unlock()
 
-
-
 	go rf.sendToAllRequestVote()
-	electionTimeout := rand.Intn(DefaultElectionTimeoutRange) + DefaultElectionTimeoutMin
-	// 1 ->  the node win the election 
-	// 2 ->  another node set itself as leader 
-	// 3 ->  a period of time pass without a winner 
-	select {
-		case <-rf.winner:
-			rf.mu.Lock()
-			fmt.Printf("%d won with %d votes\n", rf.me,rf.votesCount)
-			rf.state = Leader
-			rf.mu.Unlock()
-		case <-rf.appendEntriesReceived:
-		case <- time.After(time.Duration(electionTimeout) * time.Millisecond):
-	}
-
+	rf.handleCandidateElectionTimeout()
     
 }
 
@@ -381,18 +350,47 @@ func (rf *Raft) performLeaderActions() {
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
+	rf.sendHeartbeats()
+	time.Sleep(DefaultHeartbeatInterval * time.Millisecond)
+}
+
+func (rf *Raft) sendHeartbeats() {
 	for i := range rf.peers {
 		if i != rf.me {
-			var args AppendEntriesArgs
-			args.Term = rf.currentTerm
-			args.LeaderId = rf.me
+			var args = AppendEntriesArgs{
+				Term:       rf.currentTerm,
+				LeaderId: rf.me,
+			}
 			var reply AppendEntriesReply
 			go rf.sendAppendEntries(i, args, &reply)
-
 		}
 	}
+}
 
-	time.Sleep(DefaultHeartbeatInterval * time.Millisecond)
+
+func (rf *Raft) initiateCandidateState() {
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.currentTerm++
+	rf.votedFor = rf.me
+	rf.votesCount = 1
+	fmt.Printf("%d applied with %d votes\n", rf.me, rf.votesCount)
+}
+
+func (rf *Raft) handleCandidateElectionTimeout() {
+	electionTimeout := rand.Intn(DefaultElectionTimeoutRange) + DefaultElectionTimeoutMin
+	select {
+	// 1 ->  the node win the election 
+	// 2 ->  another node became leader 
+	// 3 ->  a period of time passed without a winner 
+	case <-rf.winner:
+		rf.mu.Lock()
+		defer rf.mu.Unlock()
+		fmt.Printf("%d won with %d votes\n", rf.me, rf.votesCount)
+		rf.state = Leader
+	case <-rf.appendEntriesReceived:
+	case <-time.After(time.Duration(electionTimeout) * time.Millisecond): 
+	}
 }
 
 //Execute actions according the actual state of the node
@@ -426,22 +424,28 @@ func (rf *Raft) raftLoop() {
 func Make(peers []*labrpc.ClientEnd, me int,
 	persister *Persister, applyCh chan ApplyMsg) *Raft {
 	rf := &Raft{}
-	rf.peers = peers
-	rf.persister = persister
-	rf.me = me
-	rf.alive = true
 	
-	rf.state = Follower
-	rf.currentTerm = 0
-	rf.votedFor = -1
-	
-	rf.votesCount = 0
-
-	rf.appendEntriesReceived = make(chan bool, DefaultChannelBufferSize)
-	rf.requestVoteReplied = make(chan bool, DefaultChannelBufferSize)
-	rf.winner = make(chan bool, DefaultChannelBufferSize)
-
+rf.	initRaft(peers, me, persister, applyCh)
 	go rf.raftLoop()
 
 	return rf
 }
+
+func (rf *Raft) initRaft(peers []*labrpc.ClientEnd, me int, persister *Persister, applyCh chan ApplyMsg) {
+	rf.peers = peers
+	rf.persister = persister
+	rf.me = me
+	rf.alive = true
+
+	// Initial state
+	rf.state = Follower
+	rf.currentTerm = 0
+	rf.votedFor = -1
+	rf.votesCount = 0
+
+	// Channels for communication
+	rf.appendEntriesReceived = make(chan bool, DefaultChannelBufferSize)
+	rf.requestVoteReplied = make(chan bool, DefaultChannelBufferSize)
+	rf.winner = make(chan bool, DefaultChannelBufferSize)
+}
+
